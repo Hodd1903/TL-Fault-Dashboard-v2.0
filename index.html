@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Branch Monitor — Overcurrent Protection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#06090c;
+    --bg-panel:#0e141b;
+    --bg-panel-raised:#141c24;
+    --line:#1e2830;
+    --line-bright:#33424d;
+    --text-hi:#e9eff3;
+    --text-mid:#93a5b1;
+    --text-dim:#56666f;
+    --ok:#35d07f;
+    --ok-dim:rgba(53,208,127,.13);
+    --fault:#ff5252;
+    --fault-dim:rgba(255,82,82,.13);
+    --warn:#ffb020;
+    --warn-dim:rgba(255,176,32,.13);
+    --accent:#2fc6e8;
+    --accent-dim:rgba(47,198,232,.13);
+    --font-display:'Chakra Petch',sans-serif;
+    --font-body:'IBM Plex Sans',sans-serif;
+    --font-mono:'IBM Plex Mono',monospace;
+    --radius:6px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background-color:var(--bg);
+    background-image:radial-gradient(var(--line) 1px, transparent 1px);
+    background-size:32px 32px;
+    background-position:-8px -8px;
+    color:var(--text-hi);
+    font-family:var(--font-body);
+    min-height:100vh;
+    padding-bottom:64px;
+  }
+  a,button{font-family:inherit;}
+  button{cursor:pointer;}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:2px;}
+
+  .eyebrow{
+    font-family:var(--font-mono);
+    text-transform:uppercase;
+    letter-spacing:.14em;
+    font-size:11px;
+    color:var(--text-dim);
+  }
+
+  /* ---------- header ---------- */
+  .topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:16px;
+    padding:20px clamp(16px,4vw,40px) 16px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand-mark{
+    width:38px;height:38px;border:1px solid var(--line-bright);border-radius:8px;
+    display:flex;align-items:center;justify-content:center;
+    color:var(--accent);font-size:18px;background:var(--bg-panel);
+    flex-shrink:0;
+  }
+  .brand-text h1{
+    font-family:var(--font-display);font-weight:600;font-size:20px;
+    margin:0;letter-spacing:.01em;
+  }
+  .header-right{display:flex;align-items:center;gap:14px;}
+  #clock{
+    font-family:var(--font-mono);font-size:13px;color:var(--text-mid);
+    letter-spacing:.03em;
+  }
+  .status-pill{
+    font-family:var(--font-mono);font-size:12px;letter-spacing:.04em;
+    padding:7px 14px;border-radius:999px;border:1px solid var(--ok);
+    color:var(--ok);background:var(--ok-dim);
+    display:flex;align-items:center;gap:7px;
+    white-space:nowrap;
+  }
+  .status-pill.alarm{border-color:var(--fault);color:var(--fault);background:var(--fault-dim);}
+  .status-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+  .status-pill.alarm .dot{animation:pulseDot 1s ease-in-out infinite;}
+
+  /* ---------- fault banner ---------- */
+  #fault-banner{
+    max-height:0;overflow:hidden;opacity:0;
+    transition:max-height .25s ease, opacity .25s ease, padding .25s ease;
+    background:linear-gradient(90deg,var(--fault-dim),transparent 80%);
+    border-bottom:1px solid var(--fault);
+    color:var(--fault);
+  }
+  #fault-banner.show{max-height:60px;opacity:1;}
+  #fault-banner-inner{
+    padding:10px clamp(16px,4vw,40px);
+    font-family:var(--font-mono);font-size:12.5px;letter-spacing:.02em;
+    display:flex;align-items:center;gap:10px;
+  }
+
+  /* ---------- layout ---------- */
+  .container{max-width:1180px;margin:0 auto;padding:28px clamp(16px,4vw,40px) 0;}
+  .view{display:none;}
+  .view.active{display:block;}
+
+  @keyframes riseIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+  .rise{animation:riseIn .5s ease both;}
+  @media (prefers-reduced-motion:reduce){.rise{animation:none;}}
+
+  /* ---------- SLD panel ---------- */
+  .panel-frame{position:relative;padding:6px;}
+  .panel-frame::before,.panel-frame::after,
+  .panel-frame .cbl,.panel-frame .cbr{
+    content:"";position:absolute;width:18px;height:18px;pointer-events:none;
+  }
+  .panel-frame::before{top:0;left:0;border-top:2px solid var(--line-bright);border-left:2px solid var(--line-bright);}
+  .panel-frame::after{top:0;right:0;border-top:2px solid var(--line-bright);border-right:2px solid var(--line-bright);}
+  .panel-frame .cbl{bottom:0;left:0;border-bottom:2px solid var(--line-bright);border-left:2px solid var(--line-bright);}
+  .panel-frame .cbr{bottom:0;right:0;border-bottom:2px solid var(--line-bright);border-right:2px solid var(--line-bright);}
+
+  .sld-panel{
+    background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:22px clamp(10px,3vw,28px) 14px;
+  }
+  .sld-panel .panel-title{
+    font-family:var(--font-mono);font-size:11px;letter-spacing:.14em;color:var(--text-dim);
+    text-transform:uppercase;margin-bottom:6px;
+  }
+  .sld-svg{width:100%;height:auto;display:block;}
+
+  .flow-line{stroke-dasharray:6 6;animation:flowmove .6s linear infinite;}
+  @keyframes flowmove{to{stroke-dashoffset:-12;}}
+  @media (prefers-reduced-motion:reduce){.flow-line{animation:none;}}
+  .fault-glyph{opacity:0;transition:opacity .15s ease;}
+  .fault-glyph.show{opacity:1;}
+  .fault-glyph.ramp{animation:blink .55s steps(1) infinite;}
+  @media (prefers-reduced-motion:reduce){.fault-glyph.ramp{animation:none;}}
+  @keyframes blink{50%{opacity:.15;}}
+  @keyframes pulseDot{0%,100%{opacity:1;}50%{opacity:.25;}}
+
+  /* ---------- cards ---------- */
+  .cards-grid{
+    display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:22px 0 8px;
+  }
+  @media (max-width:820px){.cards-grid{grid-template-columns:1fr;}}
+
+  .branch-card{
+    position:relative;
+    background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 16px 14px;
+    transition:border-color .2s ease, box-shadow .2s ease, transform .15s ease;
+  }
+  .branch-card:hover{border-color:var(--line-bright);transform:translateY(-1px);}
+  .branch-card.is-ramping{border-color:var(--fault);box-shadow:0 0 0 1px var(--fault-dim), 0 0 18px -4px var(--fault-dim);}
+  .branch-card.is-isolated{border-color:var(--fault);box-shadow:0 0 0 1px var(--fault-dim);}
+
+  .card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;}
+  .card-name{font-family:var(--font-display);font-weight:600;font-size:15px;letter-spacing:.01em;}
+  .card-restart{
+    display:none;align-items:center;gap:5px;
+    background:var(--warn-dim);border:1px solid var(--warn);color:var(--warn);
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
+    padding:4px 8px;border-radius:5px;text-transform:uppercase;
+  }
+  .card-restart.show{display:inline-flex;}
+  .card-restart:hover{background:var(--warn);color:#1a1300;}
+
+  .card-reading{display:flex;align-items:baseline;justify-content:space-between;margin:10px 0 8px;}
+  .stat-primary{display:flex;align-items:baseline;gap:5px;}
+  .stat-secondary{display:flex;align-items:baseline;gap:3px;}
+  .card-current{font-family:var(--font-mono);font-weight:600;font-size:28px;letter-spacing:.01em;}
+  .card-unit{font-family:var(--font-mono);font-size:12px;color:var(--text-dim);}
+  .card-voltage{font-family:var(--font-mono);font-weight:600;font-size:16px;color:var(--text-mid);}
+  .card-unit-sm{font-family:var(--font-mono);font-size:10px;color:var(--text-dim);}
+
+  canvas.spark{width:100%;height:38px;display:block;margin-bottom:10px;}
+
+  .badge-row{display:flex;gap:8px;margin-bottom:10px;}
+  .badge{
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:.05em;
+    padding:4px 8px;border-radius:4px;border:1px solid var(--line);
+    color:var(--text-mid);text-transform:uppercase;
+  }
+  .badge.ok{color:var(--ok);border-color:var(--ok);background:var(--ok-dim);}
+  .badge.bad{color:var(--fault);border-color:var(--fault);background:var(--fault-dim);}
+
+  .card-footer{
+    display:flex;align-items:center;justify-content:flex-end;gap:4px;
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:.06em;
+    color:var(--text-dim);text-transform:uppercase;
+  }
+  .branch-card:hover .card-footer{color:var(--accent);}
+
+  /* ---------- demo bar ---------- */
+  .demo-bar{
+    position:fixed;left:0;right:0;bottom:0;z-index:20;
+    display:flex;flex-wrap:wrap;align-items:center;gap:10px;
+    padding:10px clamp(12px,4vw,40px);
+    background:rgba(6,9,12,.9);backdrop-filter:blur(6px);
+    border-top:1px dashed var(--line-bright);
+  }
+  .demo-bar .demo-label{
+    font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;color:var(--text-dim);
+    text-transform:uppercase;margin-right:4px;
+  }
+  .demo-btn{
+    font-family:var(--font-mono);font-size:11px;letter-spacing:.03em;
+    background:transparent;border:1px dashed var(--line-bright);color:var(--text-mid);
+    padding:6px 11px;border-radius:5px;transition:.15s ease;
+  }
+  .demo-btn:hover:not(:disabled){border-color:var(--fault);color:var(--fault);}
+  .demo-btn:disabled{opacity:.35;cursor:not-allowed;}
+  .demo-btn.reset:hover:not(:disabled){border-color:var(--accent);color:var(--accent);}
+
+  /* ---------- buttons ---------- */
+  .btn{
+    font-family:var(--font-display);font-weight:600;font-size:13px;letter-spacing:.03em;
+    text-transform:uppercase;border-radius:5px;border:1px solid var(--line-bright);
+    background:transparent;color:var(--text-mid);padding:11px 18px;
+    transition:.15s ease;
+  }
+  .btn:hover:not(:disabled){border-color:var(--accent);color:var(--accent);}
+  .btn-ghost{background:transparent;}
+  .btn-back{
+    font-family:var(--font-mono);font-size:12px;color:var(--text-mid);
+    background:none;border:none;letter-spacing:.03em;padding:4px 0;margin-bottom:18px;
+    display:inline-flex;align-items:center;gap:6px;
+  }
+  .btn-back:hover{color:var(--accent);}
+  .btn-restart{
+    width:100%;border-color:var(--line-bright);
+  }
+  .btn-restart.actionable{
+    border-color:var(--warn);color:var(--warn);background:var(--warn-dim);
+    box-shadow:0 0 0 1px var(--warn-dim);
+    animation:glowPulse 1.8s ease-in-out infinite;
+  }
+  .btn-restart.actionable:hover{background:var(--warn);color:#1a1300;}
+  .btn-restart:disabled{opacity:.4;cursor:not-allowed;}
+  @keyframes glowPulse{0%,100%{box-shadow:0 0 0 1px var(--warn-dim);}50%{box-shadow:0 0 14px -2px var(--warn-dim);}}
+  @media (prefers-reduced-motion:reduce){.btn-restart.actionable{animation:none;}}
+
+  /* ---------- detail view ---------- */
+  .detail-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;}
+  .detail-head h2{font-family:var(--font-display);font-size:24px;margin:0;font-weight:600;}
+  .detail-badges{display:flex;gap:8px;}
+
+  #detail-alert{
+    display:none;align-items:flex-start;gap:10px;
+    border:1px solid var(--fault);background:var(--fault-dim);color:var(--fault);
+    border-radius:var(--radius);padding:12px 14px;margin:14px 0;
+    font-family:var(--font-mono);font-size:12.5px;line-height:1.5;letter-spacing:.01em;
+  }
+  #detail-alert.show{display:flex;}
+
+  .detail-grid{display:grid;grid-template-columns:280px 1fr;gap:18px;margin-top:16px;}
+  @media (max-width:780px){.detail-grid{grid-template-columns:1fr;}}
+
+  .info-panel,.chart-panel{
+    background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:18px;
+  }
+  .readout-label{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;}
+  .stat-duo{display:flex;gap:18px;margin:6px 0 18px;}
+  .stat-block{flex:1;min-width:0;}
+  .stat-block.divider{border-left:1px solid var(--line);padding-left:18px;}
+  .stat-value{font-family:var(--font-mono);font-weight:600;font-size:32px;line-height:1.1;margin-top:4px;}
+  .stat-value span{font-size:15px;color:var(--text-dim);margin-left:3px;}
+
+  .spec-list{list-style:none;margin:0 0 20px;padding:0;border-top:1px solid var(--line);}
+  .spec-list li{
+    display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);
+    font-family:var(--font-mono);font-size:12.5px;
+  }
+  .spec-list li span:first-child{color:var(--text-dim);}
+
+  #detail-restart-help{
+    font-size:11.5px;color:var(--text-dim);margin-top:9px;line-height:1.5;font-family:var(--font-body);
+  }
+
+  .chart-panel .panel-title{
+    font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;color:var(--text-dim);
+    text-transform:uppercase;display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;
+  }
+  .legend{display:flex;gap:14px;font-size:10.5px;letter-spacing:.02em;text-transform:none;}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px;}
+  .chart-tabs{display:flex;gap:6px;}
+  .tab-btn{
+    font-family:var(--font-mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;
+    background:transparent;border:1px solid var(--line);color:var(--text-dim);
+    padding:5px 10px;border-radius:4px;transition:.15s ease;
+  }
+  .tab-btn:hover{color:var(--text-mid);border-color:var(--line-bright);}
+  .tab-btn.active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim);}
+  #detail-chart{width:100%;height:280px;display:block;}
+</style>
+</head>
+<body>
+
+<header class="topbar rise">
+  <div class="brand">
+    <div class="brand-mark">⏚</div>
+    <div class="brand-text">
+      <div class="eyebrow">Overcurrent Protection · 3 Feeders (V2.0) · Github-Hodd1903</div>
+      <h1>Branch Monitor</h1>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="clock">--:--:--</span>
+    <div id="sys-status-pill" class="status-pill"><span class="dot"></span><span id="sys-status-text">ALL BRANCHES NORMAL</span></div>
+  </div>
+</header>
+
+<div id="fault-banner"><div id="fault-banner-inner"><span>⚠</span><span id="fault-banner-text"></span></div></div>
+
+<main class="container">
+
+  <!-- ===================== OVERVIEW ===================== -->
+  <section id="view-overview" class="view active">
+
+    <div class="panel-frame rise" style="animation-delay:.08s">
+      <span class="cbl"></span><span class="cbr"></span>
+      <div class="sld-panel">
+        <div class="panel-title">Single-line diagram — live</div>
+        <svg class="sld-svg" viewBox="0 0 760 220" xmlns="http://www.w3.org/2000/svg">
+          <!-- main incomer -->
+          <line x1="18" y1="30" x2="80" y2="30" stroke="#33424d" stroke-width="3"/>
+          <text x="18" y="20" font-family="IBM Plex Mono" font-size="10" fill="#56666f" letter-spacing=".05em">MAIN</text>
+          <!-- bus -->
+          <line x1="80" y1="30" x2="680" y2="30" stroke="#33424d" stroke-width="3"/>
+
+          <!-- branch 0,1,2 templated -->
+          <g id="branch-svg-0" data-x="180"></g>
+          <g id="branch-svg-1" data-x="380"></g>
+          <g id="branch-svg-2" data-x="580"></g>
+        </svg>
+      </div>
+    </div>
+
+    <div class="cards-grid">
+      <!-- card 0 -->
+      <article class="branch-card rise" data-branch="0" role="button" tabindex="0" style="animation-delay:.14s">
+        <div class="card-top">
+          <span class="card-name">BRANCH 01</span>
+          <button class="card-restart" data-restart="0" title="Restart branch 01">↻ RESTART</button>
+        </div>
+        <div class="card-reading">
+          <div class="stat-primary"><span class="card-current" id="card-current-0">—</span><span class="card-unit">A</span></div>
+          <div class="stat-secondary"><span class="card-voltage" id="card-voltage-0">—</span><span class="card-unit-sm">V</span></div>
+        </div>
+        <canvas class="spark" id="spark-0"></canvas>
+        <div class="badge-row">
+          <span class="badge ok" id="card-status-0">ON</span>
+          <span class="badge ok" id="card-cond-0">NORMAL</span>
+        </div>
+        <div class="card-footer">View details →</div>
+      </article>
+      <!-- card 1 -->
+      <article class="branch-card rise" data-branch="1" role="button" tabindex="0" style="animation-delay:.20s">
+        <div class="card-top">
+          <span class="card-name">BRANCH 02</span>
+          <button class="card-restart" data-restart="1" title="Restart branch 02">↻ RESTART</button>
+        </div>
+        <div class="card-reading">
+          <div class="stat-primary"><span class="card-current" id="card-current-1">—</span><span class="card-unit">A</span></div>
+          <div class="stat-secondary"><span class="card-voltage" id="card-voltage-1">—</span><span class="card-unit-sm">V</span></div>
+        </div>
+        <canvas class="spark" id="spark-1"></canvas>
+        <div class="badge-row">
+          <span class="badge ok" id="card-status-1">ON</span>
+          <span class="badge ok" id="card-cond-1">NORMAL</span>
+        </div>
+        <div class="card-footer">View details →</div>
+      </article>
+      <!-- card 2 -->
+      <article class="branch-card rise" data-branch="2" role="button" tabindex="0" style="animation-delay:.26s">
+        <div class="card-top">
+          <span class="card-name">BRANCH 03</span>
+          <button class="card-restart" data-restart="2" title="Restart branch 03">↻ RESTART</button>
+        </div>
+        <div class="card-reading">
+          <div class="stat-primary"><span class="card-current" id="card-current-2">—</span><span class="card-unit">A</span></div>
+          <div class="stat-secondary"><span class="card-voltage" id="card-voltage-2">—</span><span class="card-unit-sm">V</span></div>
+        </div>
+        <canvas class="spark" id="spark-2"></canvas>
+        <div class="badge-row">
+          <span class="badge ok" id="card-status-2">ON</span>
+          <span class="badge ok" id="card-cond-2">NORMAL</span>
+        </div>
+        <div class="card-footer">View details →</div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ===================== DETAIL ===================== -->
+  <section id="view-detail" class="view">
+    <button class="btn-back" id="btn-back">← Overview</button>
+
+    <div class="detail-head">
+      <h2 id="detail-title">BRANCH 01</h2>
+      <div class="detail-badges">
+        <span class="badge ok" id="detail-status-badge">ON</span>
+        <span class="badge ok" id="detail-cond-badge">NORMAL</span>
+      </div>
+    </div>
+
+    <div id="detail-alert"><span>⚠</span><span id="detail-alert-text"></span></div>
+
+    <div class="detail-grid">
+      <div class="info-panel">
+        <div class="stat-duo">
+          <div class="stat-block">
+            <div class="readout-label">Current</div>
+            <div id="detail-current" class="stat-value">0.0<span>A</span></div>
+          </div>
+          <div class="stat-block divider">
+            <div class="readout-label">Voltage</div>
+            <div id="detail-voltage" class="stat-value">0<span>V</span></div>
+          </div>
+        </div>
+
+        <ul class="spec-list">
+          <li><span>Status</span><span id="detail-status-text">ON</span></li>
+          <li><span>Condition</span><span id="detail-cond-text">NORMAL</span></li>
+          <li><span>Baseline load</span><span id="detail-baseline">—</span></li>
+          <li><span>Trip threshold</span><span id="detail-threshold">—</span></li>
+          <li><span>Nominal voltage</span><span id="detail-nominal">—</span></li>
+        </ul>
+
+        <button class="btn btn-restart" id="detail-restart-btn" disabled>Restart Branch</button>
+        <div id="detail-restart-help">Restart available after a fault trips this branch.</div>
+      </div>
+
+      <div class="chart-panel">
+        <div class="panel-title">
+          <div class="chart-tabs">
+            <button class="tab-btn active" id="tab-current" data-channel="i">Current</button>
+            <button class="tab-btn" id="tab-voltage" data-channel="u">Voltage</button>
+          </div>
+          <span class="legend"><i style="background:#2fc6e8"></i>Normal<i style="background:#ff5252;margin-left:10px"></i>Fault</span>
+        </div>
+        <canvas id="detail-chart"></canvas>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="demo-bar">
+  <span class="demo-label">Prototype controls — simulate fault</span>
+  <button class="demo-btn" id="demo-trip-0">Trip Branch 01</button>
+  <button class="demo-btn" id="demo-trip-1">Trip Branch 02</button>
+  <button class="demo-btn" id="demo-trip-2">Trip Branch 03</button>
+  <button class="demo-btn reset" id="demo-restart-all">Restart All</button>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var COLORS = { ok:"#35d07f", fault:"#ff5252", warn:"#ffb020", accent:"#2fc6e8", grid:"rgba(255,255,255,0.07)" };
+  var HISTORY_LEN = 42;
+  var TICK_MS = 1000;
+  var NOMINAL_V = 230;
+
+  var CONFIG = [
+    { name:"BRANCH 01", baseline:42, threshold:62 },
+    { name:"BRANCH 02", baseline:36, threshold:54 },
+    { name:"BRANCH 03", baseline:50, threshold:70 }
+  ];
+
+  var state = CONFIG.map(function(c){
+    var hist = [];
+    for(var i=0;i<HISTORY_LEN;i++){
+      hist.push({ i: c.baseline + (Math.random()*2-1), u: NOMINAL_V + (Math.random()*2-1)*1.2, fault:false });
+    }
+    return {
+      name:c.name, baseline:c.baseline, threshold:c.threshold,
+      status:"ON", mode:"normal", rampTicks:0,
+      current:c.baseline, voltage:NOMINAL_V, history:hist
+    };
+  });
+
+  var openDetail = null;
+  var detailChannel = "i";
+
+  /* ---------- SVG build (single-line diagram) ---------- */
+  var svgNS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs){
+    var el = document.createElementNS(svgNS, tag);
+    for(var k in attrs){ el.setAttribute(k, attrs[k]); }
+    return el;
+  }
+  var branchRefs = [];
+  [0,1,2].forEach(function(i){
+    var g = document.getElementById("branch-svg-"+i);
+    var bx = parseFloat(g.getAttribute("data-x"));
+
+    var feed = svgEl("line",{x1:bx,y1:30,x2:bx,y2:76,stroke:COLORS.accent,"stroke-width":2.5,class:"feed-seg flow-line"});
+    var topc = svgEl("circle",{cx:bx,cy:76,r:5,fill:COLORS.ok,stroke:"#06090c","stroke-width":1.5});
+    var blade = svgEl("line",{x1:bx,y1:76,x2:bx,y2:112,stroke:COLORS.ok,"stroke-width":3,"stroke-linecap":"round"});
+    var botc = svgEl("circle",{cx:bx,cy:112,r:5,fill:COLORS.ok,stroke:"#06090c","stroke-width":1.5});
+    var glyph = svgEl("text",{x:bx+13,y:99,"font-size":15,fill:COLORS.fault,class:"fault-glyph"});
+    glyph.textContent = "⚠";
+    var loadseg = svgEl("line",{x1:bx,y1:112,x2:bx,y2:148,stroke:COLORS.ok,"stroke-width":2.5,class:"load-seg flow-line"});
+    var loadbox = svgEl("rect",{x:bx-30,y:148,width:60,height:34,rx:4,fill:"#141c24",stroke:"#33424d","stroke-width":1.2});
+    var loadlabel = svgEl("text",{x:bx,y:169,"text-anchor":"middle","font-family":"Chakra Petch","font-size":13,"font-weight":600,fill:"#e9eff3"});
+    loadlabel.textContent = "B"+(i+1);
+    var led = svgEl("circle",{cx:bx+22,cy:76,r:4,fill:COLORS.ok});
+    var caption = svgEl("text",{x:bx,y:200,"text-anchor":"middle","font-family":"IBM Plex Mono","font-size":9.5,fill:"#56666f",class:"eyebrow"});
+    caption.textContent = "BRANCH "+String(i+1).padStart(2,"0");
+
+    [feed,topc,blade,botc,glyph,loadseg,loadbox,loadlabel,led,caption].forEach(function(el){ g.appendChild(el); });
+    branchRefs.push({ bx:bx, feed:feed, topc:topc, blade:blade, botc:botc, glyph:glyph, loadseg:loadseg, led:led });
+  });
+
+  /* ---------- chart drawing ---------- */
+  function drawChart(canvas, history, opts){
+    opts = opts || {};
+    var mini = !!opts.mini;
+    var channel = opts.channel || "i";
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    if(w === 0 || h === 0) return;
+    canvas.width = w*dpr; canvas.height = h*dpr;
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,w,h);
+
+    var vals = history.map(function(p){ return p[channel]; });
+    var floor = channel === "u" ? NOMINAL_V : 10;
+    var dataMax = Math.max.apply(null, vals.concat([opts.refValue||0, floor])) * 1.15;
+
+    var padL = mini ? 0 : 34, padR = mini ? 0 : 8, padT = mini ? 2 : 10, padB = mini ? 2 : 20;
+    var plotW = w - padL - padR;
+    var plotH = h - padT - padB;
+
+    function xAt(i){ return padL + (i/(history.length-1)) * plotW; }
+    function yAt(v){ return padT + plotH - (v/dataMax)*plotH; }
+
+    if(!mini){
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#56666f";
+      ctx.strokeStyle = COLORS.grid;
+      ctx.lineWidth = 1;
+      var steps = 4;
+      for(var s=0; s<=steps; s++){
+        var v = dataMax*s/steps;
+        var y = yAt(v);
+        ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(padL+plotW,y); ctx.stroke();
+        ctx.fillText(v.toFixed(0), 2, y-2 < 8 ? 10 : y-2);
+      }
+      if(opts.refValue){
+        var ty = yAt(opts.refValue);
+        ctx.save();
+        ctx.setLineDash([4,4]);
+        ctx.strokeStyle = COLORS.warn;
+        ctx.beginPath(); ctx.moveTo(padL,ty); ctx.lineTo(padL+plotW,ty); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = COLORS.warn;
+        ctx.fillText(opts.refLabel||"", padL+plotW-58, ty-4);
+      }
+    }
+
+    for(var i=1;i<history.length;i++){
+      var p0=history[i-1], p1=history[i];
+      ctx.beginPath();
+      ctx.moveTo(xAt(i-1), yAt(p0[channel]));
+      ctx.lineTo(xAt(i), yAt(p1[channel]));
+      ctx.strokeStyle = p1.fault ? COLORS.fault : COLORS.accent;
+      ctx.lineWidth = mini ? 1.6 : 2.2;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+  }
+
+  /* ---------- fault logic ---------- */
+  function triggerFault(i){
+    var b = state[i];
+    if(b.mode !== "normal") return;
+    b.mode = "ramping";
+    b.rampTicks = 0;
+    render();
+  }
+  function restartBranch(i){
+    var b = state[i];
+    if(b.mode !== "isolated") return;
+    b.mode = "normal";
+    b.status = "ON";
+    b.rampTicks = 0;
+    b.current = b.baseline;
+    b.voltage = NOMINAL_V;
+    b.history.push({ i:b.baseline, u:NOMINAL_V, fault:false });
+    trim(b);
+    render();
+  }
+  function trim(b){ while(b.history.length > HISTORY_LEN) b.history.shift(); }
+
+  function tick(){
+    state.forEach(function(b){
+      if(b.mode === "normal"){
+        var drift = (Math.random()*2-1) * (b.baseline*0.07);
+        b.current = Math.max(2, b.baseline + drift);
+        b.voltage = NOMINAL_V + (Math.random()*2-1)*1.2;
+        b.status = "ON";
+        b.history.push({ i:b.current, u:b.voltage, fault:false });
+      } else if(b.mode === "ramping"){
+        b.rampTicks += 1;
+        b.current = b.baseline + b.rampTicks * (b.baseline*0.4);
+        var sag = Math.min(0.18, b.rampTicks*0.06);
+        b.voltage = NOMINAL_V * (1-sag) + (Math.random()*2-1)*0.8;
+        b.status = "ON";
+        b.history.push({ i:b.current, u:b.voltage, fault:true });
+        if(b.rampTicks >= 3 || b.current >= b.threshold){
+          b.mode = "isolated";
+          b.status = "OFF";
+          b.current = 0;
+          b.voltage = 0;
+          b.history.push({ i:0, u:0, fault:true });
+        }
+      } else {
+        b.current = 0; b.voltage = 0; b.status = "OFF";
+        b.history.push({ i:0, u:0, fault:true });
+      }
+      trim(b);
+    });
+    render();
+  }
+
+  /* ---------- render ---------- */
+  function pad2(n){ return String(n).padStart(2,"0"); }
+
+  function render(){
+    renderHeader();
+    renderBanner();
+    renderSLD();
+    renderCards();
+    if(openDetail !== null) renderDetail(openDetail);
+  }
+
+  function renderHeader(){
+    var faulted = state.filter(function(b){ return b.mode !== "normal"; });
+    var pill = document.getElementById("sys-status-pill");
+    var txt = document.getElementById("sys-status-text");
+    if(faulted.length === 0){
+      pill.classList.remove("alarm");
+      txt.textContent = "ALL BRANCHES NORMAL";
+    } else {
+      pill.classList.add("alarm");
+      var names = faulted.map(function(b){ return b.name.replace("BRANCH ",""); }).join(", ");
+      txt.textContent = faulted.length + (faulted.length===1?" FAULT ACTIVE — B":" FAULTS ACTIVE — B") + names;
+    }
+  }
+
+  function renderBanner(){
+    var banner = document.getElementById("fault-banner");
+    var text = document.getElementById("fault-banner-text");
+    var ramping = state.map(function(b,i){return {b:b,i:i};}).filter(function(o){return o.b.mode==="ramping";});
+    var isolated = state.map(function(b,i){return {b:b,i:i};}).filter(function(o){return o.b.mode==="isolated";});
+    if(ramping.length===0 && isolated.length===0){
+      banner.classList.remove("show");
+      return;
+    }
+    banner.classList.add("show");
+    var parts = [];
+    isolated.forEach(function(o){ parts.push(o.b.name+" ISOLATED — OVERCURRENT FAULT, RESTART AFTER CLEARING"); });
+    ramping.forEach(function(o){ parts.push(o.b.name+" OVERCURRENT DETECTED — RELAY TRIPPING"); });
+    text.textContent = parts.join("   ·   ");
+  }
+
+  function renderSLD(){
+    state.forEach(function(b,i){
+      var r = branchRefs[i];
+      var open = b.mode === "isolated";
+      var faulted = b.mode !== "normal";
+      var color = faulted ? COLORS.fault : COLORS.ok;
+
+      r.topc.setAttribute("fill", color);
+      r.botc.setAttribute("fill", color);
+      r.blade.setAttribute("stroke", open ? "#56666f" : color);
+      r.blade.setAttribute("transform", open ? "rotate(30 "+r.bx+" 76)" : "");
+      r.led.setAttribute("fill", color);
+
+      r.glyph.classList.toggle("show", faulted);
+      r.glyph.classList.toggle("ramp", b.mode === "ramping");
+
+      var flowing = b.status === "ON";
+      r.loadseg.classList.toggle("flow-line", flowing);
+      r.loadseg.setAttribute("stroke", flowing ? color : "#33424d");
+      r.loadseg.setAttribute("stroke-dasharray", flowing ? "6 6" : "2 4");
+      if(!flowing){ r.loadseg.setAttribute("y2", 130); } else { r.loadseg.setAttribute("y2", 148); }
+    });
+  }
+
+  function renderCards(){
+    state.forEach(function(b,i){
+      var card = document.querySelector('.branch-card[data-branch="'+i+'"]');
+      card.classList.toggle("is-ramping", b.mode==="ramping");
+      card.classList.toggle("is-isolated", b.mode==="isolated");
+
+      document.getElementById("card-current-"+i).textContent = b.current.toFixed(1);
+      document.getElementById("card-voltage-"+i).textContent = b.voltage.toFixed(0);
+
+      var statusB = document.getElementById("card-status-"+i);
+      statusB.textContent = b.status;
+      statusB.classList.toggle("ok", b.status==="ON");
+      statusB.classList.toggle("bad", b.status==="OFF");
+
+      var condB = document.getElementById("card-cond-"+i);
+      var isFault = b.mode !== "normal";
+      condB.textContent = isFault ? "FAULT" : "NORMAL";
+      condB.classList.toggle("ok", !isFault);
+      condB.classList.toggle("bad", isFault);
+
+      var restartBtn = document.getElementById("card-restart-" + i) || document.querySelector('[data-restart="'+i+'"]');
+      restartBtn.classList.toggle("show", b.mode==="isolated");
+
+      drawChart(document.getElementById("spark-"+i), b.history, { mini:true });
+    });
+
+    [0,1,2].forEach(function(i){
+      var btn = document.getElementById("demo-trip-"+i);
+      btn.disabled = state[i].mode !== "normal";
+    });
+  }
+
+  function renderDetail(i){
+    var b = state[i];
+    document.getElementById("detail-title").textContent = b.name;
+
+    var sB = document.getElementById("detail-status-badge");
+    sB.textContent = b.status; sB.classList.toggle("ok", b.status==="ON"); sB.classList.toggle("bad", b.status==="OFF");
+    var cB = document.getElementById("detail-cond-badge");
+    var isFault = b.mode !== "normal";
+    cB.textContent = isFault ? "FAULT" : "NORMAL"; cB.classList.toggle("ok", !isFault); cB.classList.toggle("bad", isFault);
+
+    var alert = document.getElementById("detail-alert");
+    var alertText = document.getElementById("detail-alert-text");
+    if(b.mode === "ramping"){
+      alert.classList.add("show");
+      alertText.textContent = "OVERCURRENT FAULT DETECTED — current rising above normal range. Relay will trip and isolate this branch.";
+    } else if(b.mode === "isolated"){
+      alert.classList.add("show");
+      alertText.textContent = "RELAY TRIPPED — BRANCH ISOLATED. Clear the fault at the branch, then press Restart Branch to reconnect.";
+    } else {
+      alert.classList.remove("show");
+    }
+
+    document.getElementById("detail-current").innerHTML = b.current.toFixed(1) + "<span>A</span>";
+    document.getElementById("detail-voltage").innerHTML = b.voltage.toFixed(0) + "<span>V</span>";
+    document.getElementById("detail-status-text").textContent = b.status;
+    document.getElementById("detail-cond-text").textContent = isFault ? "FAULT" : "NORMAL";
+    document.getElementById("detail-baseline").textContent = b.baseline.toFixed(0) + " A";
+    document.getElementById("detail-threshold").textContent = b.threshold.toFixed(0) + " A";
+    document.getElementById("detail-nominal").textContent = NOMINAL_V + " V";
+
+    var restartBtn = document.getElementById("detail-restart-btn");
+    var help = document.getElementById("detail-restart-help");
+    if(b.mode === "isolated"){
+      restartBtn.disabled = false;
+      restartBtn.classList.add("actionable");
+      restartBtn.textContent = "Restart " + b.name;
+      help.textContent = "Confirm the fault is physically cleared, then restart to reconnect this branch.";
+    } else {
+      restartBtn.disabled = true;
+      restartBtn.classList.remove("actionable");
+      restartBtn.textContent = "Restart Branch";
+      help.textContent = b.mode === "ramping"
+        ? "Waiting for the relay to trip and isolate the branch."
+        : "Restart available after a fault trips this branch.";
+    }
+
+    document.getElementById("tab-current").classList.toggle("active", detailChannel==="i");
+    document.getElementById("tab-voltage").classList.toggle("active", detailChannel==="u");
+
+    var refValue = detailChannel==="i" ? b.threshold : NOMINAL_V;
+    var refLabel = detailChannel==="i" ? ("TRIP "+b.threshold+"A") : ("NOM "+NOMINAL_V+"V");
+    drawChart(document.getElementById("detail-chart"), b.history, { mini:false, channel:detailChannel, refValue:refValue, refLabel:refLabel });
+  }
+
+  /* ---------- navigation ---------- */
+  function openBranch(i){
+    openDetail = i;
+    detailChannel = "i";
+    document.getElementById("view-overview").classList.remove("active");
+    document.getElementById("view-detail").classList.add("active");
+    requestAnimationFrame(function(){ renderDetail(i); });
+  }
+  function closeBranch(){
+    openDetail = null;
+    document.getElementById("view-detail").classList.remove("active");
+    document.getElementById("view-overview").classList.add("active");
+  }
+
+  /* ---------- wire up events ---------- */
+  document.querySelectorAll(".branch-card").forEach(function(card){
+    var i = parseInt(card.getAttribute("data-branch"),10);
+    card.addEventListener("click", function(e){
+      if(e.target.closest("[data-restart]")) return;
+      openBranch(i);
+    });
+    card.addEventListener("keydown", function(e){
+      if(e.key === "Enter" || e.key === " "){ e.preventDefault(); openBranch(i); }
+    });
+  });
+  document.querySelectorAll("[data-restart]").forEach(function(btn){
+    btn.addEventListener("click", function(e){
+      e.stopPropagation();
+      restartBranch(parseInt(btn.getAttribute("data-restart"),10));
+    });
+  });
+  document.getElementById("btn-back").addEventListener("click", closeBranch);
+  document.querySelectorAll(".tab-btn").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      detailChannel = btn.getAttribute("data-channel");
+      if(openDetail !== null) renderDetail(openDetail);
+    });
+  });
+  document.getElementById("detail-restart-btn").addEventListener("click", function(){
+    if(openDetail !== null) restartBranch(openDetail);
+  });
+  [0,1,2].forEach(function(i){
+    document.getElementById("demo-trip-"+i).addEventListener("click", function(){ triggerFault(i); });
+  });
+  document.getElementById("demo-restart-all").addEventListener("click", function(){
+    state.forEach(function(b,i){ if(b.mode==="isolated") restartBranch(i); });
+  });
+
+  /* ---------- clock ---------- */
+  function tickClock(){
+    var d = new Date();
+    document.getElementById("clock").textContent = pad2(d.getHours())+":"+pad2(d.getMinutes())+":"+pad2(d.getSeconds());
+  }
+
+  /* ---------- init ---------- */
+  tickClock();
+  setInterval(tickClock, 1000);
+  render();
+  setInterval(tick, TICK_MS);
+  window.addEventListener("resize", function(){
+    renderCards();
+    if(openDetail !== null) renderDetail(openDetail);
+  });
+})();
+</script>
+</body>
+</html>

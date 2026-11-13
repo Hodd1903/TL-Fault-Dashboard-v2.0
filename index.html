@@ -298,6 +298,34 @@
   .tab-btn:hover{color:var(--text-mid);border-color:var(--line-bright);}
   .tab-btn.active{color:var(--accent);border-color:var(--accent);background:var(--accent-dim);}
   #detail-chart{width:100%;height:280px;display:block;}
+
+  /* ---------- history / scrolling chart ---------- */
+  .chart-toolbar{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;margin-bottom:10px;}
+  .tb-group{display:flex;gap:6px;flex-wrap:wrap;}
+  .tab-btn:disabled{opacity:.35;cursor:not-allowed;}
+  .tab-btn.is-live{color:var(--ok);border-color:var(--ok);background:var(--ok-dim);}
+  .tab-btn.is-paused{color:var(--warn);border-color:var(--warn);background:var(--warn-dim);}
+  #detail-chart{cursor:grab;touch-action:pan-y;}
+  #detail-chart.dragging{cursor:grabbing;}
+  #detail-nav{width:100%;height:48px;display:block;margin-top:8px;cursor:pointer;touch-action:none;
+    background:var(--bg);border:1px solid var(--line);border-radius:4px;}
+  .view-info{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;margin-top:8px;
+    font-family:var(--font-mono);font-size:11px;color:var(--text-dim);letter-spacing:.03em;}
+  .view-mode{color:var(--ok);} .view-mode.hist{color:var(--warn);}
+  .chart-hint{font-size:11.5px;color:var(--text-dim);margin-top:6px;}
+  .log-panel{margin-top:18px;background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;}
+  .log-panel .panel-title{font-family:var(--font-mono);font-size:11px;letter-spacing:.12em;color:var(--text-dim);
+    text-transform:uppercase;display:flex;justify-content:space-between;margin-bottom:10px;}
+  .fault-log{list-style:none;margin:0;padding:0;border-top:1px solid var(--line);}
+  .fault-log li{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap;
+    padding:11px 0;border-bottom:1px solid var(--line);font-family:var(--font-mono);font-size:12.5px;}
+  .log-sub{color:var(--text-dim);font-size:11.5px;margin-top:3px;}
+  .log-actions{display:flex;gap:8px;align-items:center;}
+  .log-empty{padding:14px 0;color:var(--text-dim);font-size:13px;}
+  .toast{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);z-index:30;background:var(--bg-panel-raised);
+    border:1px solid var(--line-bright);color:var(--text-hi);font-family:var(--font-mono);font-size:12px;
+    padding:8px 14px;border-radius:5px;opacity:0;pointer-events:none;transition:opacity .2s ease;}
+  .toast.show{opacity:1;}
 </style>
 </head>
 <body>
@@ -427,7 +455,7 @@
         <ul class="spec-list">
           <li><span>Status</span><span id="detail-status-text">ON</span></li>
           <li><span>Condition</span><span id="detail-cond-text">NORMAL</span></li>
-          <li><span>Baseline load</span><span id="detail-baseline">—</span></li>
+          <li><span>Normal current load</span><span id="detail-baseline">—</span></li>
           <li><span>Trip threshold</span><span id="detail-threshold">—</span></li>
           <li><span>Nominal voltage</span><span id="detail-nominal">—</span></li>
         </ul>
@@ -444,12 +472,36 @@
           </div>
           <span class="legend"><i style="background:#2fc6e8"></i>Normal<i style="background:#ff5252;margin-left:10px"></i>Fault</span>
         </div>
-        <canvas id="detail-chart"></canvas>
+        <div class="chart-toolbar">
+          <div class="tb-group" role="group" aria-label="Time range">
+            <button class="tab-btn" data-span="30000">30s</button>
+            <button class="tab-btn" data-span="60000">1m</button>
+            <button class="tab-btn" data-span="300000">5m</button>
+            <button class="tab-btn" data-span="1800000">30m</button>
+            <button class="tab-btn" data-span="3600000">1h</button>
+          </div>
+          <div class="tb-group">
+            <button class="tab-btn" id="btn-prev-fault">◀ Fault</button>
+            <button class="tab-btn" id="btn-next-fault">Fault ▶</button>
+            <button class="tab-btn is-live" id="btn-live">● Live</button>
+          </div>
+        </div>
+        <canvas id="detail-chart" tabindex="0" aria-label="Current or voltage history. Drag, scroll or use arrow keys to move through time."></canvas>
+        <canvas id="detail-nav" aria-label="History overview"></canvas>
+        <div class="view-info"><span id="view-range">—</span><span id="view-mode" class="view-mode">LIVE</span><span id="view-hist">—</span></div>
+        <div class="chart-hint">Drag the graph or the bar under it, or scroll, to look back in time. Ctrl + scroll zooms.</div>
       </div>
+    </div>
+
+    <div class="log-panel">
+      <div class="panel-title"><span>Fault log — <span id="log-branch">BRANCH 01</span></span><span id="log-count"></span></div>
+      <ul class="fault-log" id="fault-log"></ul>
     </div>
   </section>
 
 </main>
+
+<div id="toast" class="toast" role="status"></div>
 
 <div class="demo-bar">
   <span class="demo-label">Prototype controls — simulate fault</span>
@@ -464,7 +516,9 @@
   "use strict";
 
   var COLORS = { ok:"#35d07f", fault:"#ff5252", warn:"#ffb020", accent:"#2fc6e8", grid:"rgba(255,255,255,0.07)" };
-  var HISTORY_LEN = 42;
+  var HISTORY_LEN = 42;          // points shown in the card sparkline
+  var MAX_SAMPLES = 30000;       // history kept per branch
+  var GAP_MS = 5000, MIN_SPAN = 5000, MAX_SPAN = 6*3600*1000;
   var TICK_MS = 1000;
   var NOMINAL_V = 230;
 
@@ -475,19 +529,22 @@
   ];
 
   var state = CONFIG.map(function(c){
-    var hist = [];
-    for(var i=0;i<HISTORY_LEN;i++){
-      hist.push({ i: c.baseline + (Math.random()*2-1), u: NOMINAL_V + (Math.random()*2-1)*1.2, fault:false });
+    var hist = [], now0 = Date.now();
+    for(var i=60;i>=1;i--){
+      hist.push({ t: now0 - i*TICK_MS, i: c.baseline + (Math.random()*2-1), u: NOMINAL_V + (Math.random()*2-1)*1.2, fault:false });
     }
     return {
       name:c.name, baseline:c.baseline, threshold:c.threshold,
       status:"ON", mode:"normal", rampTicks:0,
-      current:c.baseline, voltage:NOMINAL_V, history:hist
+      current:c.baseline, voltage:NOMINAL_V, history:hist, events:[]
     };
   });
 
   var openDetail = null;
   var detailChannel = "i";
+  var view = { span:60000, end:null, faultIdx:null };   // end:null = follow live
+  var hoverX = null, geom = null, navGeom = null, navDrag = null, dragX = null;
+  function $(id){ return document.getElementById(id); }
 
   /* ---------- SVG build (single-line diagram) ---------- */
   var svgNS = "http://www.w3.org/2000/svg";
@@ -532,6 +589,7 @@
     ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,w,h);
 
+    if(mini && history.length > HISTORY_LEN) history = history.slice(history.length - HISTORY_LEN);
     var vals = history.map(function(p){ return p[channel]; });
     var floor = channel === "u" ? NOMINAL_V : 10;
     var dataMax = Math.max.apply(null, vals.concat([opts.refValue||0, floor])) * 1.15;
@@ -580,54 +638,76 @@
   }
 
   /* ---------- fault logic ---------- */
+  var evSeq = 0;
+  function openEvent(b){
+    for(var k=b.events.length-1;k>=0;k--){ if(b.events[k].tRestart==null) return b.events[k]; }
+    return null;
+  }
+  function setMode(b, mode, t){
+    var ev = openEvent(b);
+    if(mode === "ramping" && !ev){
+      b.events.push({ id:++evSeq, tStart:t, tTrip:null, tRestart:null, peak:b.current, limit:b.threshold });
+      if(b.events.length > 200) b.events.shift();
+    } else if(mode === "isolated" && ev && ev.tTrip == null){
+      ev.tTrip = t;
+    } else if(mode === "normal" && ev){
+      ev.tRestart = t;
+    }
+    b.mode = mode;
+  }
+  function pushSample(b, t, fault){
+    b.history.push({ t:t, i:b.current, u:b.voltage, fault:fault });
+    var ev = openEvent(b);
+    if(ev && b.current > ev.peak) ev.peak = b.current;
+    if(b.history.length > MAX_SAMPLES + 500) b.history.splice(0, b.history.length - MAX_SAMPLES);
+  }
   function triggerFault(i){
     var b = state[i];
     if(b.mode !== "normal") return;
-    b.mode = "ramping";
+    setMode(b, "ramping", Date.now());
     b.rampTicks = 0;
     render();
   }
   function restartBranch(i){
     var b = state[i];
     if(b.mode !== "isolated") return;
-    b.mode = "normal";
+    var t = Date.now();
+    setMode(b, "normal", t);
     b.status = "ON";
     b.rampTicks = 0;
     b.current = b.baseline;
     b.voltage = NOMINAL_V;
-    b.history.push({ i:b.baseline, u:NOMINAL_V, fault:false });
-    trim(b);
+    pushSample(b, t, false);
     render();
   }
-  function trim(b){ while(b.history.length > HISTORY_LEN) b.history.shift(); }
 
   function tick(){
+    var t = Date.now();
     state.forEach(function(b){
       if(b.mode === "normal"){
         var drift = (Math.random()*2-1) * (b.baseline*0.07);
         b.current = Math.max(2, b.baseline + drift);
         b.voltage = NOMINAL_V + (Math.random()*2-1)*1.2;
         b.status = "ON";
-        b.history.push({ i:b.current, u:b.voltage, fault:false });
+        pushSample(b, t, false);
       } else if(b.mode === "ramping"){
         b.rampTicks += 1;
         b.current = b.baseline + b.rampTicks * (b.baseline*0.4);
         var sag = Math.min(0.18, b.rampTicks*0.06);
         b.voltage = NOMINAL_V * (1-sag) + (Math.random()*2-1)*0.8;
         b.status = "ON";
-        b.history.push({ i:b.current, u:b.voltage, fault:true });
+        pushSample(b, t, true);
         if(b.rampTicks >= 3 || b.current >= b.threshold){
-          b.mode = "isolated";
+          setMode(b, "isolated", t);
           b.status = "OFF";
           b.current = 0;
           b.voltage = 0;
-          b.history.push({ i:0, u:0, fault:true });
+          pushSample(b, t+1, true);
         }
       } else {
         b.current = 0; b.voltage = 0; b.status = "OFF";
-        b.history.push({ i:0, u:0, fault:true });
+        pushSample(b, t, true);
       }
-      trim(b);
     });
     render();
   }
@@ -778,15 +858,317 @@
     document.getElementById("tab-current").classList.toggle("active", detailChannel==="i");
     document.getElementById("tab-voltage").classList.toggle("active", detailChannel==="u");
 
-    var refValue = detailChannel==="i" ? b.threshold : NOMINAL_V;
-    var refLabel = detailChannel==="i" ? ("TRIP "+b.threshold+"A") : ("NOM "+NOMINAL_V+"V");
-    drawChart(document.getElementById("detail-chart"), b.history, { mini:false, channel:detailChannel, refValue:refValue, refLabel:refLabel });
+    drawDetailCharts();
+    updateToolbar(b);
+    renderFaultLog(b);
+  }
+
+  /* ---------- history chart (scroll / zoom / fault markers) ---------- */
+  function clock(t, ms){
+    var d = new Date(t);
+    var r = pad2(d.getHours())+":"+pad2(d.getMinutes())+":"+pad2(d.getSeconds());
+    return ms ? r+"."+String(d.getMilliseconds()).padStart(3,"0") : r;
+  }
+  function dur(ms){
+    var s = Math.round(ms/1000); if(s < 60) return s+" s";
+    var m = Math.floor(s/60); s %= 60; if(m < 60) return m+" min "+s+" s";
+    return Math.floor(m/60)+" h "+(m%60)+" min";
+  }
+  function lowerBound(arr, t){
+    var lo = 0, hi = arr.length;
+    while(lo < hi){ var m = (lo+hi)>>1; if(arr[m].t < t) lo = m+1; else hi = m; }
+    return lo;
+  }
+  function viewRange(b){
+    var h = b.history, latest = h.length ? h[h.length-1].t : Date.now();
+    var end = view.end == null ? latest : Math.min(view.end, latest);
+    return { t0:end-view.span, t1:end, latest:latest, first:h.length ? h[0].t : latest };
+  }
+  function setViewEnd(end){
+    var b = state[openDetail], h = b.history; if(!h.length) return;
+    var latest = h[h.length-1].t, first = h[0].t;
+    end = Math.max(Math.min(latest, first + view.span), Math.min(end, latest));
+    view.end = (latest - end <= view.span*0.005 + 1) ? null : end;
+  }
+  // points inside [t0,t1]; very long windows are reduced to min/max per pixel column so spikes survive
+  function windowPoints(hist, ch, t0, t1, cols){
+    var out = [], n = hist.length, k, p, prev = null;
+    if(!n) return out;
+    var a = Math.max(0, lowerBound(hist,t0)-1), z = Math.min(n, lowerBound(hist,t1)+1);
+    if(z <= a) return out;
+    if(z-a <= cols*2){
+      for(k=a;k<z;k++){
+        p = hist[k];
+        if(prev && p.t-prev.t > GAP_MS) out.push({brk:true});
+        out.push({ t:p.t, v:p[ch], f:p.fault }); prev = p;
+      }
+      return out;
+    }
+    var colW = (t1-t0)/cols, cur = null, mn=0, mx=0, mnT=0, mxT=0, fl=false;
+    function flush(){
+      if(cur === null) return;
+      if(mnT <= mxT){ out.push({t:mnT,v:mn,f:fl}); if(mxT!==mnT || mn!==mx) out.push({t:mxT,v:mx,f:fl}); }
+      else { out.push({t:mxT,v:mx,f:fl}); out.push({t:mnT,v:mn,f:fl}); }
+      cur = null;
+    }
+    for(k=a;k<z;k++){
+      p = hist[k];
+      if(prev && p.t-prev.t > GAP_MS){ flush(); out.push({brk:true}); }
+      var col = Math.floor((p.t-t0)/colW), v = p[ch];
+      if(col !== cur){ flush(); cur = col; mn = mx = v; mnT = mxT = p.t; fl = p.fault; }
+      else { if(v<mn){mn=v;mnT=p.t;} if(v>mx){mx=v;mxT=p.t;} if(p.fault) fl = true; }
+      prev = p;
+    }
+    flush();
+    return out;
+  }
+  function niceScale(max){
+    if(!(max > 0)) max = 1;
+    var raw = max/4, mag = Math.pow(10, Math.floor(Math.log10(raw))), n = raw/mag;
+    var step = (n<=1?1 : n<=2?2 : n<=2.5?2.5 : n<=5?5 : 10) * mag;
+    return { step:step, top:Math.ceil(max/step-1e-9)*step };
+  }
+  function decimalsOf(step){
+    var s = String(+step.toPrecision(6)), d = s.indexOf(".");
+    return d < 0 ? 0 : s.length-d-1;
+  }
+  var TIME_STEPS = [1,2,5,10,15,30,60,120,300,600,900,1800,3600,7200,14400,21600];
+  function strokeRuns(ctx, pts, xAt, yAt, lw){
+    var prev = null, run = null;
+    ctx.lineWidth = lw; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    function end(){ if(run !== null){ ctx.stroke(); run = null; } }
+    pts.forEach(function(p){
+      if(p.brk){ end(); prev = null; return; }
+      var x = xAt(p.t), y = yAt(p.v);
+      if(prev){
+        var col = p.f ? COLORS.fault : COLORS.accent;
+        if(col !== run){ end(); ctx.beginPath(); ctx.strokeStyle = col; ctx.moveTo(prev.x, prev.y); run = col; }
+        ctx.lineTo(x, y);
+      }
+      prev = { x:x, y:y };
+    });
+    end();
+  }
+  function prepCanvas(canvas){
+    var dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+    if(!w || !h) return null;
+    var W = Math.round(w*dpr), H = Math.round(h*dpr);
+    if(canvas.width !== W || canvas.height !== H){ canvas.width = W; canvas.height = H; }
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+    return { ctx:ctx, w:w, h:h };
+  }
+  function eventTime(ev){ return ev.tTrip != null ? ev.tTrip : ev.tStart; }
+
+  function drawMain(b){
+    var c = prepCanvas($("detail-chart")); if(!c) return;
+    var ctx = c.ctx, w = c.w, h = c.h, ch = detailChannel;
+    var padL = 46, padR = 10, padT = 12, padB = 24, plotW = w-padL-padR, plotH = h-padT-padB;
+    var r = viewRange(b);
+    geom = { padL:padL, plotW:plotW, t0:r.t0, t1:r.t1 };
+    var pts = windowPoints(b.history, ch, r.t0, r.t1, Math.floor(plotW));
+    var ref = ch === "i" ? b.threshold : NOMINAL_V;
+    var maxV = 0; pts.forEach(function(p){ if(!p.brk && p.v > maxV) maxV = p.v; });
+    var sc = niceScale(Math.max(maxV, ref)*1.08), top = sc.top, dec = decimalsOf(sc.step);
+    function xAt(t){ return padL + (t-r.t0)/view.span*plotW; }
+    function yAt(v){ return padT + plotH - (v/top)*plotH; }
+
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.lineWidth = 1; ctx.strokeStyle = COLORS.grid; ctx.fillStyle = "#56666f"; ctx.textAlign = "left";
+    for(var v = 0; v <= top + sc.step*0.01; v += sc.step){
+      var y = yAt(v);
+      ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(padL+plotW,y); ctx.stroke();
+      ctx.fillText(v.toFixed(dec), 2, Math.max(10, y-2));
+    }
+    var stepS = TIME_STEPS[TIME_STEPS.length-1], want = view.span/1000/Math.max(2, Math.floor(plotW/90));
+    for(var q=0;q<TIME_STEPS.length;q++){ if(TIME_STEPS[q] >= want){ stepS = TIME_STEPS[q]; break; } }
+    var off = -new Date().getTimezoneOffset()*60000, stepMs = stepS*1000;
+    ctx.textAlign = "center";
+    for(var tt = Math.ceil((r.t0+off)/stepMs)*stepMs - off; tt <= r.t1; tt += stepMs){
+      var x = xAt(tt);
+      ctx.strokeStyle = COLORS.grid; ctx.beginPath(); ctx.moveTo(x,padT); ctx.lineTo(x,padT+plotH); ctx.stroke();
+      var lab = clock(tt); if(stepS >= 60) lab = lab.slice(0,5);
+      ctx.fillText(lab, Math.min(w-18, Math.max(padL+14, x)), h-7);
+    }
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, 0, plotW, h); ctx.clip();
+    var marks = [];
+    b.events.forEach(function(ev){
+      var es = ev.tStart, ee = ev.tRestart != null ? ev.tRestart : r.latest;
+      if(ee >= r.t0 && es <= r.t1){
+        var x0 = Math.max(padL, xAt(es)), x1 = Math.min(padL+plotW, xAt(ee));
+        ctx.fillStyle = "rgba(255,82,82,.10)"; ctx.fillRect(x0, padT, Math.max(1, x1-x0), plotH);
+      }
+      var tm = eventTime(ev);
+      if(tm >= r.t0 && tm <= r.t1) marks.push({ x:xAt(tm), c:COLORS.fault, dash:false, row:0, text:(ev.tTrip != null ? "TRIPPED " : "FAULT ")+clock(tm) });
+      if(ev.tRestart != null && ev.tRestart >= r.t0 && ev.tRestart <= r.t1) marks.push({ x:xAt(ev.tRestart), c:COLORS.ok, dash:true, row:1, text:"RESTART "+clock(ev.tRestart) });
+    });
+    if(ref){
+      var ty = yAt(ref);
+      ctx.save(); ctx.setLineDash([4,4]); ctx.strokeStyle = COLORS.warn;
+      ctx.beginPath(); ctx.moveTo(padL,ty); ctx.lineTo(padL+plotW,ty); ctx.stroke(); ctx.restore();
+    }
+    strokeRuns(ctx, pts, xAt, yAt, 2.2);
+    var real = pts.filter(function(p){ return !p.brk; });
+    if(real.length === 1){ ctx.fillStyle = real[0].f ? COLORS.fault : COLORS.accent; ctx.beginPath(); ctx.arc(xAt(real[0].t), yAt(real[0].v), 2.5, 0, 6.283); ctx.fill(); }
+    marks.forEach(function(m){
+      ctx.save(); ctx.strokeStyle = m.c; ctx.lineWidth = 1.2; if(m.dash) ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(m.x,padT); ctx.lineTo(m.x,padT+plotH); ctx.stroke(); ctx.restore();
+    });
+    ctx.restore();
+
+    ctx.textAlign = "left";
+    if(ref){
+      var lbl = ch === "i" ? "TRIP "+ref+"A" : "NOM "+ref+"V", ly = yAt(ref);
+      ctx.fillStyle = COLORS.warn;
+      ctx.fillText(lbl, padL+plotW-ctx.measureText(lbl).width-4, ly-4 < padT+8 ? ly+12 : ly-4);
+    }
+    marks.forEach(function(m){
+      var tw = ctx.measureText(m.text).width, right = m.x + 4 + tw > padL+plotW;
+      ctx.fillStyle = m.c;
+      ctx.fillText(m.text, right ? m.x-4-tw : m.x+4, padT + 10 + m.row*12);
+    });
+    if(!pts.length){
+      ctx.fillStyle = "#56666f"; ctx.textAlign = "center";
+      ctx.fillText("No data in this time range", padL+plotW/2, padT+plotH/2);
+    }
+    if(hoverX != null && hoverX >= padL && hoverX <= padL+plotW && b.history.length){
+      var tH = r.t0 + (hoverX-padL)/plotW*view.span, hist = b.history, idx = lowerBound(hist, tH);
+      if(idx > 0 && (idx >= hist.length || tH-hist[idx-1].t < hist[idx].t-tH)) idx--;
+      var sp = hist[idx];
+      if(sp && Math.abs(sp.t-tH) <= Math.max(view.span/plotW*30, 1500)){
+        var sx = xAt(sp.t), sy = yAt(sp[ch]);
+        ctx.strokeStyle = "rgba(233,239,243,.35)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(sx,padT); ctx.lineTo(sx,padT+plotH); ctx.stroke();
+        ctx.fillStyle = sp.fault ? COLORS.fault : COLORS.accent;
+        ctx.beginPath(); ctx.arc(sx, sy, 3.5, 0, 6.283); ctx.fill();
+        var l1 = clock(sp.t, view.span <= 120000), l2 = (ch === "i" ? sp.i.toFixed(1)+" A" : sp.u.toFixed(0)+" V") + (sp.fault ? "  FAULT" : "");
+        var bw = Math.max(ctx.measureText(l1).width, ctx.measureText(l2).width)+14, bx = sx+10+bw > padL+plotW ? sx-10-bw : sx+10, by = Math.min(Math.max(padT+2, sy-18), padT+plotH-34);
+        ctx.fillStyle = "rgba(6,9,12,.92)"; ctx.strokeStyle = "#33424d"; ctx.fillRect(bx,by,bw,32); ctx.strokeRect(bx+.5,by+.5,bw-1,31);
+        ctx.textAlign = "left"; ctx.fillStyle = "#93a5b1"; ctx.fillText(l1, bx+7, by+13);
+        ctx.fillStyle = sp.fault ? COLORS.fault : "#e9eff3"; ctx.fillText(l2, bx+7, by+26);
+      }
+    }
+  }
+
+  function drawNav(b){
+    var c = prepCanvas($("detail-nav")); if(!c) return;
+    var ctx = c.ctx, w = c.w, h = c.h, hist = b.history;
+    if(hist.length < 2){ navGeom = null; return; }
+    var first = hist[0].t, last = hist[hist.length-1].t, total = Math.max(last-first, 1000);
+    navGeom = { first:first, total:total, w:w };
+    var ch = detailChannel, pts = windowPoints(hist, ch, first, last, Math.floor(w));
+    var ref = ch === "i" ? b.threshold : NOMINAL_V, mx = ref;
+    pts.forEach(function(p){ if(!p.brk && p.v > mx) mx = p.v; });
+    mx = mx*1.1;
+    function xAt(t){ return (t-first)/total*w; }
+    function yAt(v){ return h-3-(v/mx)*(h-6); }
+    b.events.forEach(function(ev){
+      var x0 = xAt(ev.tStart), x1 = xAt(ev.tRestart != null ? ev.tRestart : last);
+      ctx.fillStyle = "rgba(255,82,82,.28)"; ctx.fillRect(x0, 0, Math.max(2, x1-x0), h);
+    });
+    strokeRuns(ctx, pts, xAt, yAt, 1.2);
+    var r = viewRange(b);
+    var vx0 = Math.max(0, xAt(r.t0)), vx1 = Math.min(w, xAt(r.t1));
+    ctx.fillStyle = "rgba(47,198,232,.14)"; ctx.fillRect(vx0, 0, Math.max(3, vx1-vx0), h);
+    ctx.strokeStyle = COLORS.accent; ctx.lineWidth = 1.5; ctx.strokeRect(vx0+.75, .75, Math.max(3, vx1-vx0)-1.5, h-1.5);
+    navGeom.vx0 = vx0; navGeom.vx1 = vx1;
+  }
+
+  function drawDetailCharts(){
+    if(openDetail === null) return;
+    var b = state[openDetail];
+    drawMain(b); drawNav(b);
+    var r = viewRange(b), live = view.end == null;
+    $("view-range").textContent = clock(r.t0)+" → "+clock(r.t1);
+    var vm = $("view-mode"); vm.textContent = live ? "LIVE" : "HISTORY"; vm.classList.toggle("hist", !live);
+    var nf = b.events.length;
+    $("view-hist").textContent = "History "+dur(r.latest-r.first)+" · "+nf+" fault"+(nf === 1 ? "" : "s");
+  }
+  var rafPending = false;
+  function redrawDetail(){
+    if(rafPending) return; rafPending = true;
+    requestAnimationFrame(function(){ rafPending = false; if(openDetail !== null){ drawDetailCharts(); updateToolbar(state[openDetail]); } });
+  }
+  function updateToolbar(b){
+    var live = view.end == null, lb = $("btn-live");
+    lb.textContent = live ? "● Live" : "Back to live";
+    lb.classList.toggle("is-live", live); lb.classList.toggle("is-paused", !live);
+    document.querySelectorAll("[data-span]").forEach(function(btn){
+      btn.classList.toggle("active", Math.abs(+btn.getAttribute("data-span") - view.span) < view.span*0.01);
+    });
+    $("btn-prev-fault").disabled = $("btn-next-fault").disabled = b.events.length === 0;
+  }
+
+  function panBy(dt){ view.faultIdx = null; setViewEnd(viewRange(state[openDetail]).t1 + dt); redrawDetail(); }
+  function setSpan(ms){
+    view.faultIdx = null;
+    var r = viewRange(state[openDetail]), center = (r.t0+r.t1)/2;
+    view.span = Math.max(MIN_SPAN, Math.min(MAX_SPAN, ms));
+    if(view.end != null) setViewEnd(center + view.span/2);
+    redrawDetail();
+  }
+  function zoomAt(factor, frac){
+    view.faultIdx = null;
+    var r = viewRange(state[openDetail]), anchor = r.t0 + frac*view.span;
+    view.span = Math.max(MIN_SPAN, Math.min(MAX_SPAN, view.span*factor));
+    if(view.end != null) setViewEnd(anchor + (1-frac)*view.span);
+    redrawDetail();
+  }
+  function centerOn(t){
+    if(view.span > 120000) view.span = 60000;
+    setViewEnd(t + view.span/2); redrawDetail();
+  }
+  function faultTimes(b){ return b.events.map(eventTime).sort(function(a,c){ return a-c; }); }
+  function stepFault(dir){
+    var b = state[openDetail], times = faultTimes(b); if(!times.length) return;
+    var idx = view.faultIdx;
+    if(idx == null || idx >= times.length){
+      if(view.end == null){ if(dir > 0){ toast("Already at the latest fault"); return; } idx = times.length; }
+      else {
+        var r = viewRange(b), center = (r.t0+r.t1)/2, tol = view.span*0.02;
+        if(dir < 0){ idx = times.length; while(idx > 0 && times[idx-1] >= center-tol) idx--; }
+        else { idx = -1; while(idx+1 < times.length && times[idx+1] <= center+tol) idx++; }
+      }
+    }
+    idx += dir;
+    if(idx < 0 || idx >= times.length){ toast(dir < 0 ? "No earlier fault" : "No later fault"); return; }
+    view.faultIdx = idx; centerOn(times[idx]);
+  }
+  var toastTimer = null;
+  function toast(msg){
+    var el = $("toast"); el.textContent = msg; el.classList.add("show");
+    clearTimeout(toastTimer); toastTimer = setTimeout(function(){ el.classList.remove("show"); }, 2500);
+  }
+
+  var logSig = "";
+  function renderFaultLog(b){
+    $("log-branch").textContent = b.name;
+    var sig = b.name+"|"+b.events.map(function(e){ return [e.id,e.tTrip,e.tRestart,Math.round(e.peak*10)].join(","); }).join(";");
+    if(sig === logSig) return;
+    logSig = sig;
+    $("log-count").textContent = b.events.length ? b.events.length+" this session" : "";
+    var ul = $("fault-log");
+    if(!b.events.length){ ul.innerHTML = '<li class="log-empty">No faults recorded since this page was opened.</li>'; return; }
+    ul.innerHTML = b.events.slice().reverse().map(function(ev){
+      var st, cls = "";
+      if(ev.tRestart != null) st = ev.tTrip != null ? "RESTARTED" : "CLEARED";
+      else { st = ev.tTrip != null ? "ISOLATED" : "TRIPPING"; cls = " bad"; }
+      var sub = "Detected "+clock(ev.tStart);
+      if(ev.tTrip != null) sub += " · tripped "+clock(ev.tTrip);
+      if(ev.tRestart != null) sub += " · restarted "+clock(ev.tRestart)+(ev.tTrip != null ? " (off for "+dur(ev.tRestart-ev.tTrip)+")" : "");
+      return '<li><div><div>Overcurrent — peak '+ev.peak.toFixed(1)+' A <span style="color:var(--text-dim)">(limit '+ev.limit+' A)</span></div>'+
+        '<div class="log-sub">'+sub+'</div></div><div class="log-actions"><span class="badge'+cls+'">'+st+'</span>'+
+        '<button class="tab-btn" data-ev="'+ev.id+'">View on graph</button></div></li>';
+    }).join("");
   }
 
   /* ---------- navigation ---------- */
   function openBranch(i){
     openDetail = i;
     detailChannel = "i";
+    view.end = null; view.faultIdx = null; hoverX = null; logSig = "";
     document.getElementById("view-overview").classList.remove("active");
     document.getElementById("view-detail").classList.add("active");
     requestAnimationFrame(function(){ renderDetail(i); });
@@ -815,12 +1197,79 @@
     });
   });
   document.getElementById("btn-back").addEventListener("click", closeBranch);
-  document.querySelectorAll(".tab-btn").forEach(function(btn){
+  document.querySelectorAll(".tab-btn[data-channel]").forEach(function(btn){
     btn.addEventListener("click", function(){
       detailChannel = btn.getAttribute("data-channel");
       if(openDetail !== null) renderDetail(openDetail);
     });
   });
+  document.querySelectorAll("[data-span]").forEach(function(btn){
+    btn.addEventListener("click", function(){ setSpan(+btn.getAttribute("data-span")); });
+  });
+  $("btn-live").addEventListener("click", function(){ view.end = null; view.faultIdx = null; redrawDetail(); });
+  $("btn-prev-fault").addEventListener("click", function(){ stepFault(-1); });
+  $("btn-next-fault").addEventListener("click", function(){ stepFault(1); });
+  $("fault-log").addEventListener("click", function(e){
+    var btn = e.target.closest("[data-ev]"); if(!btn) return;
+    var b = state[openDetail], id = +btn.getAttribute("data-ev");
+    var ev = b.events.filter(function(x){ return x.id === id; })[0]; if(!ev) return;
+    view.faultIdx = faultTimes(b).indexOf(eventTime(ev));
+    centerOn(eventTime(ev));
+  });
+  (function(){
+    var cv = $("detail-chart");
+    function localX(e){ return e.clientX - cv.getBoundingClientRect().left; }
+    cv.addEventListener("pointerdown", function(e){
+      dragX = localX(e); cv.setPointerCapture(e.pointerId); cv.classList.add("dragging"); cv.focus();
+    });
+    cv.addEventListener("pointermove", function(e){
+      var x = localX(e);
+      if(dragX != null && geom){
+        panBy(-(x-dragX)/geom.plotW*view.span); dragX = x;
+      } else { hoverX = x; redrawDetail(); }
+    });
+    function endDrag(){ dragX = null; cv.classList.remove("dragging"); }
+    cv.addEventListener("pointerup", endDrag);
+    cv.addEventListener("pointercancel", endDrag);
+    cv.addEventListener("pointerleave", function(){ hoverX = null; redrawDetail(); });
+    cv.addEventListener("wheel", function(e){
+      e.preventDefault(); if(!geom) return;
+      if(e.ctrlKey || e.metaKey){
+        zoomAt(Math.exp(e.deltaY*0.002), Math.min(1, Math.max(0, (localX(e)-geom.padL)/geom.plotW)));
+      } else {
+        var d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+        if(e.deltaMode === 1) d *= 16;
+        panBy(d/geom.plotW*view.span);
+      }
+    }, { passive:false });
+    cv.addEventListener("keydown", function(e){
+      var k = e.key, b = state[openDetail];
+      if(k === "ArrowLeft") panBy(-view.span*0.25);
+      else if(k === "ArrowRight") panBy(view.span*0.25);
+      else if(k === "Home"){ view.faultIdx = null; setViewEnd(viewRange(b).first + view.span); redrawDetail(); }
+      else if(k === "End"){ view.end = null; view.faultIdx = null; redrawDetail(); }
+      else if(k === "+" || k === "="){ zoomAt(0.5, 0.5); }
+      else if(k === "-"){ zoomAt(2, 0.5); }
+      else return;
+      e.preventDefault();
+    });
+    var nv = $("detail-nav");
+    function navX(e){ return e.clientX - nv.getBoundingClientRect().left; }
+    function navMove(x){
+      if(!navGeom || !navDrag) return;
+      var t0 = navGeom.first + (x-navDrag)/navGeom.w*navGeom.total;
+      view.faultIdx = null; setViewEnd(t0 + view.span); redrawDetail();
+    }
+    nv.addEventListener("pointerdown", function(e){
+      if(!navGeom) return;
+      var x = navX(e);
+      navDrag = (x >= navGeom.vx0 && x <= navGeom.vx1) ? x - navGeom.vx0 : (navGeom.vx1-navGeom.vx0)/2;
+      nv.setPointerCapture(e.pointerId); navMove(x);
+    });
+    nv.addEventListener("pointermove", function(e){ if(navDrag != null) navMove(navX(e)); });
+    nv.addEventListener("pointerup", function(){ navDrag = null; });
+    nv.addEventListener("pointercancel", function(){ navDrag = null; });
+  })();
   document.getElementById("detail-restart-btn").addEventListener("click", function(){
     if(openDetail !== null) restartBranch(openDetail);
   });
@@ -844,7 +1293,7 @@
   setInterval(tick, TICK_MS);
   window.addEventListener("resize", function(){
     renderCards();
-    if(openDetail !== null) renderDetail(openDetail);
+    if(openDetail !== null) drawDetailCharts();
   });
 })();
 </script>
